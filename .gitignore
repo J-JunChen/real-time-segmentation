@@ -120,7 +120,3 @@ work_dirs/
 # log
 *.log
 
-# bise
-configs/bisenet_v1/
-mmseg/models/backbones/bisenet_v1.py
- 
