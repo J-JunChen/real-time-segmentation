@@ -48,13 +48,6 @@ class AttentionRefinementModule(nn.Module):
             )
         )
     
-    def init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                kaiming_init(m)
-            elif isinstance(m, (_BatchNorm, nn.GroupNorm)):
-                constant_init(m, 1)
-
     def forward(self, x):
         feature = self.conv3x3_bn_relu(x)
         attention = self.channel_attention(feature)
@@ -102,13 +95,6 @@ class FeatureFusionModule(nn.Module):
                 norm_cfg=None,
                 act_cfg=dict(type='Sigmoid'))
         )
-
-    def init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                kaiming_init(m)
-            elif isinstance(m, (_BatchNorm, nn.GroupNorm)):
-                constant_init(m, 1)
 
     def forward(self, x1, x2):
         x = torch.cat([x1, x2], dim=1)
@@ -174,33 +160,36 @@ class SpatialPath(nn.Module):
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
 
-    def init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                kaiming_init(m)
-            elif isinstance(m, (_BatchNorm, nn.GroupNorm)):
-                constant_init(m, 1)
-
     def forward(self, x):
         x = self.downsample(x)
         out = self.conv1x1(x)
         return out
 
 
-class ContextPath(ResNet):
+class ContextPath(nn.Module):
     """Context Path
     """
     def __init__(self,
+                 base_model,
                  depth,
                  out_channels,
+                 conv_cfg=None,
                  act_cfg=dict(type='ReLU'),
+                 norm_cfg=dict(type='BN'),
                  align_corners=False):
-        super(ContextPath, self).__init__(depth)
+        super(ContextPath, self).__init__()
+        self.deep_stem = False
+        if base_model is 'ResNet':
+            self.base_model = ResNet(depth)
+        elif base_model is 'ResNetV1c':
+            self.base_model = ResNet(depth, deep_stem=True)
+            self.deep_stem = True
         inner_channels = 128
+        self.conv_cfg = conv_cfg
         self.act_cfg = act_cfg
+        self.norm_cfg = norm_cfg
         self.align_corners = align_corners
         # follow the original paper of ResNet, when deep_base is False.
-        # self.backbone = backbone(deep_stem=deep_stem)  
         self.arm16 = AttentionRefinementModule(256, inner_channels)
         self.arm32 = AttentionRefinementModule(512, inner_channels)
         self.gap = nn.AdaptiveAvgPool2d(1)  # Global Average Pooling
@@ -233,27 +222,21 @@ class ContextPath(ResNet):
             act_cfg=self.act_cfg)
     
     def forward(self, x):
-        # x = self.init_layer(x)
-        # x = self.maxpool(x)
-        # x = self.layer1(x)
-        # feat_8 = self.layer2(x)  # 1/8 of spatial size
-        # feat_16 = self.layer3(feat_8)  # 1/16 of spatial size
-        # feat_32 = self.layer4(feat_16)  # 1/32 of spatial size
         """Forward function."""
         if self.deep_stem:
-            x = self.stem(x)
+            x = self.base_model.stem(x)
         else:
-            x = self.conv1(x)
-            x = self.norm1(x)
-            x = self.relu(x)
-        x = self.maxpool(x)
+            x = self.base_model.conv1(x)
+            x = self.base_model.norm1(x)
+            x = self.base_model.relu(x)
+        x = self.base_model.maxpool(x)
         outs = []
-        for i, layer_name in enumerate(self.res_layers):
-            res_layer = getattr(self, layer_name)
+        for i, layer_name in enumerate(self.base_model.res_layers):
+            res_layer = getattr(self.base_model, layer_name)
             x = res_layer(x)
-            if i in self.out_indices:
+            if i in self.base_model.out_indices:
                 outs.append(x)
-        feat_8 = outs[1]
+        feat_8 = outs[1]  # 1/8 of spatial size
         feat_16 = outs[2]  # 1/16 of spatial size
         feat_32 = outs[3] # 1/32 of spatial size
         H8, W8 = feat_8.size()[2:]
@@ -301,6 +284,7 @@ class BiseNetV1(nn.Module):
             Default: (0, 1, 2).
     """
     def __init__(self,
+                 base_model,
                  depth=18,
                  in_channels=3,
                  out_indices=(0, 1, 2),
@@ -323,6 +307,7 @@ class BiseNetV1(nn.Module):
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg)
         self.cp = ContextPath(
+            base_model=base_model,
             depth=self.depth,
             out_channels=128,
             act_cfg=self.act_cfg,
@@ -336,15 +321,6 @@ class BiseNetV1(nn.Module):
             act_cfg=self.act_cfg)  
     
     def init_weights(self, pretrained=None):
-        # if isinstance(pretrained, str):
-        #     logger = get_root_logger()
-        #     load_checkpoint(self.cp, pretrained, strict=False, logger=logger)
-        # elif pretrained is None:
-        #     for m in self.modules():
-        #         if isinstance(m, nn.Conv2d):
-        #             kaiming_init(m)
-        #         elif isinstance(m, (_BatchNorm, nn.GroupNorm)):
-        #             constant_init(m, 1)
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 kaiming_init(m)
@@ -352,7 +328,7 @@ class BiseNetV1(nn.Module):
                 constant_init(m, 1)
         if isinstance(pretrained, str):
             logger = get_root_logger()
-            load_checkpoint(self.cp, pretrained, strict=False, logger=logger)
+            load_checkpoint(self.cp.base_model, pretrained, strict=False, logger=logger)
 
     def forward(self, x):
         feat_sp = self.sp(x)

@@ -1,11 +1,12 @@
 # model settings
-# norm_cfg = dict(type='SyncBN', requires_grad=True)
-norm_cfg = dict(type='BN', requires_grad=True)
+norm_cfg = dict(type='SyncBN', requires_grad=True)
+# norm_cfg = dict(type='BN', requires_grad=True)
 model = dict(
     type='EncoderDecoder',
     pretrained='open-mmlab://resnet18_v1c',
     backbone=dict(
         type='BiseNetV1',
+        base_model='ResNetV1c',
         depth=18,
         out_indices=(0, 1, 2),
         # dilations=(1, 1, 1, 1), # no dilations in BiseNet, so this line can be annotated
