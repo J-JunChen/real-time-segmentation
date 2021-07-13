@@ -185,3 +185,4 @@ class ERFNet(BaseBackbone):
         outs.append(x)
         
         return outs[0]
+        
