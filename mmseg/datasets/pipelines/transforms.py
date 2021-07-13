@@ -565,6 +565,9 @@ class RandomCrop(object):
     def __repr__(self):
         return self.__class__.__name__ + f'(crop_size={self.crop_size})'
 
+@PIPELINES.register_module()
+class CenterCrop(object):
+    pass
 
 @PIPELINES.register_module()
 class RandomRotate(object):

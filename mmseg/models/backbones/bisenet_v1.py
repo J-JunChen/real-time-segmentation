@@ -1,3 +1,8 @@
+"""
+paper title: Bisenet: Bilateral segmentation network for real-time semantic segmentation
+reference code: 1. https://github.com/ycszen/TorchSeg
+             2. https://github.com/CoinCheung/BiSeNet
+"""
 import torch
 import torch.nn as nn
 from mmcv.cnn import (ConvModule, constant_init, build_conv_layer,
@@ -269,7 +274,7 @@ class ContextPath(nn.Module):
             align_corners=self.align_corners)
         feat16_up = self.conv_head16(feat16_up)
 
-        return feat16_up, feat32_up  # x8, x16
+        return feat_8, feat16_up, feat32_up  # x8, x8, x16
 
 
 @BACKBONES.register_module()
@@ -282,12 +287,19 @@ class BiseNetV1(nn.Module):
             [higher_res_features, lower_res_features, fusion_output].
             Often set to (0,1,2) to enable aux. heads.
             Default: (0, 1, 2).
+        with_sp (bool): Use the Spatial Path or not,
+            if True, BiseNet will use the extra Spatial Path;
+            if False, BiseNet will use the res3b1 from Resnet to replace the Spatial Path,
+                but the feature size will still be 1/8 of the image size.
+            reference code: https://github.com/CoinCheung/BiSeNet/tree/master/old
+            Default: True.
     """
     def __init__(self,
                  base_model,
                  depth=18,
                  in_channels=3,
                  out_indices=(0, 1, 2),
+                 with_sp=True,
                  conv_cfg=None,
                  norm_cfg=dict(type='BN'),
                  act_cfg=dict(type='ReLU'),
@@ -296,16 +308,18 @@ class BiseNetV1(nn.Module):
         self.depth = depth
         self.in_channels = in_channels
         self.out_indices = out_indices
+        self.with_sp = with_sp
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
         self.act_cfg = act_cfg
         self.align_corners = align_corners
-        self.sp = SpatialPath(
-            in_channels=self.in_channels, 
-            out_channels=128,
-            conv_cfg=self.conv_cfg,
-            norm_cfg=self.norm_cfg,
-            act_cfg=self.act_cfg)
+        if self.with_sp:
+            self.sp = SpatialPath(
+                in_channels=self.in_channels, 
+                out_channels=128,
+                conv_cfg=self.conv_cfg,
+                norm_cfg=self.norm_cfg,
+                act_cfg=self.act_cfg)
         self.cp = ContextPath(
             base_model=base_model,
             depth=self.depth,
@@ -331,8 +345,11 @@ class BiseNetV1(nn.Module):
             load_checkpoint(self.cp.base_model, pretrained, strict=False, logger=logger)
 
     def forward(self, x):
-        feat_sp = self.sp(x)
-        feat_cp8, feat_cp16 = self.cp(x)
+        if self.with_sp:
+            feat_sp = self.sp(x)
+            _, feat_cp8, feat_cp16 = self.cp(x)
+        else:
+            feat_sp, feat_cp8, feat_cp16 = self.cp(x)
         feat_fuse = self.ffm(feat_sp, feat_cp8)
 
         outs = [feat_cp8, feat_cp16, feat_fuse]
