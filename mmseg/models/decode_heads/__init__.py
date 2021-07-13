@@ -7,8 +7,9 @@ from .gc_head import GCHead
 from .lraspp_head import LRASPPHead
 from .nl_head import NLHead
 from .psp_head import PSPHead
+from .erf_head import ERFHead
 
 __all__ = [
     'FCNHead', 'PSPHead', 'ASPPHead', 'NLHead', 'GCHead', 'CCHead',
-    'ANNHead', 'DAHead', 'LRASPPHead'
+    'ANNHead', 'DAHead', 'LRASPPHead', 'ERFHead'
 ]

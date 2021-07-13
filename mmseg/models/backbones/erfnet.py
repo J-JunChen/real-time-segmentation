@@ -1,16 +1,18 @@
 """  
 paper title: ERFNet: Efficient Residual Factorized ConvNet for Real-time Semantic Segmentation
+paper link: https://ieeexplore.ieee.org/abstract/document/8063438
 reference code: https://github.com/Eromera/erfnet_pytorch
 """
 import torch
 import torch.nn as nn
-import torch.utils.checkpoint as cp
 from mmcv.cnn import (ConvModule, build_conv_layer, build_norm_layer,
                       constant_init, kaiming_init)
+from mmcv.runner import load_checkpoint
 from mmcv.utils.parrots_wrapper import _BatchNorm
 
 from ..builder import BACKBONES
-from .base_backbone import BaseBackbone
+from mmseg.utils import get_root_logger
+
 
 class DownsamplerBlock(nn.Module):
     """Downsampler Block
@@ -118,7 +120,7 @@ class Non_bottleneck_1d(nn.Module):
 
 
 @BACKBONES.register_module()
-class ERFNet(BaseBackbone):
+class ERFNet(nn.Module):
     """The Encoder part of ERFNet
     """
     def __init__(self,

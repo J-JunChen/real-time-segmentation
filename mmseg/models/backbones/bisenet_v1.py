@@ -1,5 +1,6 @@
 """
 paper title: Bisenet: Bilateral segmentation network for real-time semantic segmentation
+paper link: https://arxiv.org/abs/1808.00897
 reference code: 1. https://github.com/ycszen/TorchSeg
              2. https://github.com/CoinCheung/BiSeNet
 """
