@@ -9,6 +9,7 @@ model = dict(
         base_model='ResNetV1c',
         depth=18,
         out_indices=(0, 1, 2),
+        with_sp=False, # using the Spatial Path or not
         # dilations=(1, 1, 1, 1), # no dilations in BiseNet, so this line can be annotated
         # strides=(1, 2, 1, 1), # need downsample for regular resnet, so this line can be annotated
         norm_cfg=norm_cfg,

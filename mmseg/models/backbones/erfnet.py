@@ -178,6 +178,9 @@ class ERFNet(nn.Module):
                     kaiming_init(m)
                 elif isinstance(m, (_BatchNorm, nn.GroupNorm)):
                     constant_init(m, 1)
+        else:
+            raise TypeError('pretrained must be a str or None')
+
         
     def forward(self, x):
         x = self.initial_block(x)
@@ -187,4 +190,3 @@ class ERFNet(nn.Module):
         outs.append(x)
         
         return outs[0]
-        

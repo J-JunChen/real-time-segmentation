@@ -19,10 +19,7 @@ class ERFHead(BaseDecodeHead):
                  align_corners=False,
                  **kwargs):
         super(ERFHead, self).__init__(**kwargs)
-        # self.in_channels = in_channels
         self.mid_channels = mid_channels
-        # self.channels = channels
-        # self.dropout_ratio = dropout_ratio
         self.align_corners = align_corners
         # layer 17, change to the 1x1_conv
         self.conv1x1_17 = ConvModule(
