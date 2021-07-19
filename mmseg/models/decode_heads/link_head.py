@@ -6,7 +6,7 @@ reference code: https://github.com/xiaoyufenfei/Efficient-Segmentation-Networks
 import torch
 import torch.nn as nn
 from mmcv.cnn import (ConvModule, build_conv_layer, build_norm_layer,
-                      constant_init, kaiming_init)
+                      constant_init, kaiming_init, build_upsample_layer)
 from mmseg.ops import resize
 
 from ..builder import HEADS
@@ -22,6 +22,7 @@ class DecoderBlock(nn.Module):
                  conv_cfg=None,
                  norm_cfg=dict(type='BN'),
                  act_cfg=dict(type='ReLU'),
+                 upsample_cfg=dict(type='InterpConv'),
                  align_corners=False):
         super(DecoderBlock, self).__init__()
         self.up_ratio=up_ratio
@@ -41,11 +42,19 @@ class DecoderBlock(nn.Module):
         # self.conv2 is modified "full-conv[(3x3), (m/4, m/4), *2]" in original paper.
         # Notes: I replace the ConvTranspose2d to Bilinear Interpolation,
         #         however, it need add non-linear function before upsample.
-        self.conv2 = ConvModule(
-            in_channels//4,
-            in_channels//4,
-            1,
-            conv_cfg=self.conv_cfg,
+        # self.conv2 = ConvModule(
+        #     in_channels//4,
+        #     in_channels//4,
+        #     1,
+        #     conv_cfg=self.conv_cfg,
+        #     norm_cfg=self.norm_cfg,
+        #     act_cfg=self.act_cfg
+        # )
+        self.upsample = build_upsample_layer(
+            cfg=upsample_cfg,
+            in_channels=in_channels//4,
+            out_channels=in_channels//4,
+            with_cp=False,
             norm_cfg=self.norm_cfg,
             act_cfg=self.act_cfg
         )
@@ -60,18 +69,65 @@ class DecoderBlock(nn.Module):
         )
 
     def forward(self, x):
+        # h, w = x[0].shape[-2:]
+        output = self.conv1(x)
+        # output = self.conv2(output)
+        # if self.up_ratio != 1:
+        #     # [Notes] Decoder Block 1 doesn't upsample
+        #     output = resize(
+        #         input=output,
+        #         size=(h * self.up_ratio, w * self.up_ratio),
+        #         mode='bilinear',
+        #         align_corners=self.align_corners
+        #     )
+        output = self.upsample(output)
+        output = self.conv3(output)
+        return output
+
+
+class Classifier(nn.Module):
+    """  including the last full-conv(3x3) and conv(3x3) """
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN'),
+                 act_cfg=dict(type='ReLU'),
+                 align_corners=False):
+        super(Classifier, self).__init__()
+        self.conv_cfg = conv_cfg
+        self.norm_cfg = norm_cfg
+        self.act_cfg = act_cfg
+        self.align_corners = align_corners
+        self.conv1 = ConvModule(
+            in_channels,
+            out_channels,
+            1,
+            conv_cfg=self.conv_cfg,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg
+        )
+        self.conv3x3 = ConvModule(
+            out_channels,
+            out_channels,
+            3,
+            stride=1,
+            padding=1,
+            conv_cfg=self.conv_cfg,
+            norm_cfg=self.norm_cfg,
+            act_cfg=self.act_cfg
+        )
+    
+    def forward(self, x):
         h, w = x[0].shape[-2:]
         output = self.conv1(x)
-        output = self.conv2(output)
-        if self.up_ratio != 1:
-            # [Notes] Decoder Block 1 doesn't upsample
-            output = resize(
-                input=output,
-                size=(h * self.up_ratio, w * self.up_ratio),
-                mode='bilinear',
-                align_corners=self.align_corners
-            )
-        output = self.conv3(output)
+        output = resize(
+            input=output,
+            size=(h * 2, w * 2),
+            mode='bilinear',
+            align_corners=self.align_corners
+        )
+        output = self.conv3x3(output)
         return output
 
 
@@ -85,13 +141,17 @@ class LINKHead(BaseDecodeHead):
                 full-conv, conv, full-conv in the last three layers.
     """
     def __init__(self,
+                 with_classifier = False,
+                 upsample_cfg=dict(type='InterpConv'),
                  **kwargs):
         super(LINKHead, self).__init__(**kwargs)
-
-        self.decoder_block_4 = DecoderBlock(512, 256, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, self.align_corners)
-        self.decoder_block_3 = DecoderBlock(256, 128, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, self.align_corners)
-        self.decoder_block_2 = DecoderBlock(128, 64, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, self.align_corners)
-        self.decoder_block_1 = DecoderBlock(64, 64, 1, self.conv_cfg, self.norm_cfg, self.act_cfg, self.align_corners)
+        self.with_classifier = with_classifier
+        self.decoder_block_4 = DecoderBlock(512, 256, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, upsample_cfg, self.align_corners)
+        self.decoder_block_3 = DecoderBlock(256, 128, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, upsample_cfg, self.align_corners)
+        self.decoder_block_2 = DecoderBlock(128, 64, 2, self.conv_cfg, self.norm_cfg, self.act_cfg, upsample_cfg, self.align_corners)
+        self.decoder_block_1 = DecoderBlock(64, 64, 1, self.conv_cfg, self.norm_cfg, self.act_cfg, upsample_cfg, self.align_corners)
+        if self.with_classifier:
+            self.cls = Classifier(64, 32, self.conv_cfg, self.norm_cfg, self.act_cfg, self.align_corners)
 
     def forward(self, inputs):
         """Forward function."""
@@ -105,6 +165,9 @@ class LINKHead(BaseDecodeHead):
         mix_8 = feat_8 + self.decoder_block_3(mix_16)
         mix_4 = feat_4 + self.decoder_block_2(mix_8)
         output = self.decoder_block_1(mix_4)
+
+        if self.with_classifier:
+            output = self.cls(output)
 
         output = self.cls_seg(output)
         return output
