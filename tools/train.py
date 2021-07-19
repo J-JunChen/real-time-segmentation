@@ -19,7 +19,7 @@ from mmseg.utils import collect_env, get_root_logger
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a segmentor')
     parser.add_argument('config', help='train config file path')
-    # parser.add_argument('--config', default='./configs/linknet/linknet_r18_1024x1024_80k_cityscapes.py', help='train config file path')
+    # parser.add_argument('--config', default='./configs/fanet/fanet_r18b_1024x1024_80k_cityscapes.py', help='train config file path')
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument(
         '--load-from', help='the checkpoint file to load weights from')

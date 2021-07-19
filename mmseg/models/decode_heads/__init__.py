@@ -9,8 +9,10 @@ from .nl_head import NLHead
 from .psp_head import PSPHead
 from .erf_head import ERFHead
 from .link_head import LINKHead
+from .fa_head import FastAttentionHead
 
 __all__ = [
     'FCNHead', 'PSPHead', 'ASPPHead', 'NLHead', 'GCHead', 'CCHead',
-    'ANNHead', 'DAHead', 'LRASPPHead', 'ERFHead', 'LINKHead'
+    'ANNHead', 'DAHead', 'LRASPPHead', 'ERFHead', 'LINKHead',
+    'FastAttentionHead'
 ]
