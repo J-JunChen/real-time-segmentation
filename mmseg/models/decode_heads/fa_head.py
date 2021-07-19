@@ -97,15 +97,17 @@ class FastAttentionBlock(nn.Module):
 
         query = self.query_project(x)
         query = query.reshape(*query.shape[:2], -1)
+        query_l2 = torch.norm(query, dim=1).reshape(query.shape[0], -1, query.shape[2]) # l2 norm for query along the channel dimension
+        query = query / query_l2
         query = query.permute(0, 2, 1).contiguous()
-        query_l2 = torch.norm(query) # l2 norm for query
 
         key = self.key_project(x)
         key = key.reshape(*key.shape[:2], -1)
-        key_l2 = torch.norm(key) # l2 norm for key
+        key_l2 = key / torch.norm(key, dim=1).reshape(key.shape[0], -1, key.shape[2]) # l2 norm for key along the channel dimension
+        key = key / key_l2
 
-        value = self.value_project(x)
-        value = value.reshape(*value.shape[:2], -1)
+        _value = self.value_project(x)
+        value = _value.reshape(*_value.shape[:2], -1)
         value = value.permute(0, 2, 1).contiguous()
 
         # sim_map = torch.matmul(query, key)
@@ -114,13 +116,16 @@ class FastAttentionBlock(nn.Module):
         # sim_map = F.softmax(sim_map, dim=-1)
         # context = torch.matmul(sim_map, value)
 
-        sim_map = torch.matmul(key_l2, value) / (height * width) # cosine similarity
+        sim_map = torch.bmm(key, value) 
+        # sim_map /= (height * width) # cosine similarity
         
-        context = torch.matmul(query_l2, sim_map)
+        context = torch.bmm(query, sim_map)
         context = context.permute(0, 2, 1).contiguous()
         context = context.reshape(batch_size, -1, *x.shape[2:])
         if self.out_project is not None:
             context = self.out_project(context)
+        # context += _value
+        # context += x
         return context
 
 
@@ -130,13 +135,14 @@ class FastAttentionHead(LINKHead):
                  upsample_cfg=dict(type='InterpConv'),
                  **kwargs):
         super(FastAttentionHead, self).__init__(**kwargs)
-        self.fa = []
+        self.fa = nn.ModuleList()
         for i in range(6,10): # the number of in_channels is 2^i
             self.fa.append(
                 FastAttentionBlock(
                     in_channels=2 ** i,
-                    channels=2 ** i,  # channel can be changed if you want.
-                    out_channels=2 ** i if i is 6 else 2 ** (i-1), 
+                    channels=32,  # channels can be changed if you want.
+                    # out_channels=2 ** i if i is 6 else 2 ** (i-1), 
+                    out_channels=2 ** i, 
                     key_query_num_convs=1,
                     value_out_num_convs=1,
                     with_out=True,
@@ -154,10 +160,14 @@ class FastAttentionHead(LINKHead):
         feat_8 = x[1]
         feat_4 = x[0]
 
-        mix_16 = self.fa[3](feat_32) + self.decoder_block_4(feat_32)
-        mix_8 = self.fa[2](feat_16) + self.decoder_block_3(mix_16)
-        mix_4 = self.fa[1](feat_8) + self.decoder_block_2(mix_8)
-        output = self.fa[0](feat_4) + self.decoder_block_1(mix_4)
+        mix_16 = self.decoder_block_4(self.fa[3](feat_32) + feat_32)
+        mix_8 = self.decoder_block_3(self.fa[2](feat_16) + mix_16)
+        mix_4 = self.decoder_block_2(self.fa[1](feat_8) + mix_8)
+        output = self.decoder_block_1(self.fa[0](feat_4) + mix_4)
+        # mix_16 = self.fa[2](feat_16) + self.decoder_block_4(feat_32)
+        # mix_8 = self.fa[1](feat_8) + self.decoder_block_3(mix_16)
+        # mix_4 = self.fa[0](feat_4) + self.decoder_block_2(mix_8)
+        # output =  self.decoder_block_1(mix_4)
 
         output = self.cls_seg(output)
         return output
