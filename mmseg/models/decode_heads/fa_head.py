@@ -1,12 +1,12 @@
 """
 paper title: Real-time Semantic Segmentation with Fast Attention.
 paper link: https://arxiv.org/pdf/2007.03815
+reference code: https://github.com/feinanshan/FANet/blob/master/Testing/models/fanet/fanet.py
 """
 import torch
 import torch.nn as nn
-from mmcv.cnn import (ConvModule, build_conv_layer, build_norm_layer,
-                      constant_init, kaiming_init, build_activation_layer,
-                      build_upsample_layer)
+import torch.nn.functional as F
+from mmcv.cnn import (ConvModule, build_upsample_layer)
 from mmseg.ops import resize
 
 from ..builder import HEADS
@@ -20,7 +20,7 @@ class FastAttentionBlock(nn.Module):
     Args:
         in_channels (int): Input channels of key, query, value feature.
         channels (int): Output channels of key/query transform.
-        out_channels (int): Output channels.
+        smf_channels (int): Output channels.
         key_query_num_convs (int): Number of convs for key/query projection.
         value_num_convs (int): Number of convs for value projection.
         with_out (bool): Whether use out projection.
@@ -28,111 +28,119 @@ class FastAttentionBlock(nn.Module):
         norm_cfg (dict|None): Config of norm layers.
         act_cfg (dict|None): Config of activation layers.
     """
-    def __init__(self, in_channels, channels,
-                 out_channels, key_query_num_convs, value_out_num_convs,
-                 with_out, conv_cfg, norm_cfg, act_cfg):
+    def __init__(self, in_channels, channels, up_channels,
+                 smf_channels, conv_cfg, 
+                 norm_cfg, act_cfg, align_corners):
         super(FastAttentionBlock, self).__init__()
-        
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.channels = channels
-        self.conv_cfg = conv_cfg
-        self.norm_cfg = norm_cfg
-        self.act_cfg = act_cfg
-        self.key_project = self.build_project(
+        self.align_corners = align_corners
+        self.key_project = ConvModule(
             in_channels,
             channels,
-            num_convs=key_query_num_convs,
+            1,
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=None)
-        self.query_project = self.build_project(
+        self.query_project = ConvModule(
             in_channels,
             channels,
-            num_convs=key_query_num_convs,
+            1,
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=None)
-        self.value_project = self.build_project(
+        self.value_project = ConvModule(
             in_channels,
-            channels if with_out else out_channels,
-            num_convs=value_out_num_convs,
+            in_channels,
+            1,
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
-        if with_out:
-            self.out_project = self.build_project(
-                channels,
-                out_channels,
-                num_convs=value_out_num_convs,
-                conv_cfg=conv_cfg,
-                norm_cfg=norm_cfg,
-                act_cfg=act_cfg)
-        else:
-            self.out_project = None
+        self.out_project = ConvModule(
+            in_channels,
+            in_channels,
+            1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.up = ConvModule(
+            in_channels,
+            up_channels,
+            1,
+            stride=1,
+            padding=1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+        self.smooth = ConvModule(
+            in_channels,
+            smf_channels,
+            3,
+            stride=1,
+            padding=1,
+            conv_cfg=conv_cfg,
+            norm_cfg=norm_cfg,
+            act_cfg=act_cfg)
+    
+    def upsample_add(self, x, y):
+        '''Upsample and add two feature maps.
+        '''
+        _, _, H, W = y.size()
+        x = resize(
+            x,
+            size=(H, W),
+            mode='bilinear',
+            align_corners=self.align_corners
+        )
+        return x + y
 
-        self.init_weights()
-
-    def init_weights(self):
-        """Initialize weight of later layer."""
-        if self.out_project is not None:
-            if not isinstance(self.out_project, ConvModule):
-                constant_init(self.out_project, 0)
-
-    def build_project(self, in_channels, channels, num_convs,
-                      conv_cfg, norm_cfg, act_cfg):
-        """Build projection layer for key/query/value/out."""    
-        convs = [nn.Conv2d(in_channels, channels, 1)]
-        for _ in range(num_convs - 1):
-            convs.append(nn.Conv2d(channels, channels, 1))
-        if len(convs) > 1:
-            convs = nn.Sequential(*convs)
-        else:
-            convs = convs[0]
-        return convs
-
-    def forward(self, x):
+    def forward(self, x, up_feat_in, up_flag, smf_flag):
         """Forward function."""
         batch_size, channels, height, width = x.size()
 
         query = self.query_project(x)
         query = query.reshape(*query.shape[:2], -1)
-        query_l2 = torch.norm(query, dim=1).reshape(query.shape[0], -1, query.shape[2]) # l2 norm for query along the channel dimension
-        query = query / query_l2
         query = query.permute(0, 2, 1).contiguous()
+        query = F.normalize(query, p=2, dim=2, eps=1e-12) # l2 norm for query along the channel dimension
 
         key = self.key_project(x)
         key = key.reshape(*key.shape[:2], -1)
-        key_l2 = key / torch.norm(key, dim=1).reshape(key.shape[0], -1, key.shape[2]) # l2 norm for key along the channel dimension
-        key = key / key_l2
+        key = F.normalize(key, p=2, dim=1, eps=1e-12) # l2 norm for key along the channel dimension
 
-        _value = self.value_project(x)
-        value = _value.reshape(*_value.shape[:2], -1)
+        value = self.value_project(x)
+        value = value.reshape(*value.shape[:2], -1)
         value = value.permute(0, 2, 1).contiguous()
 
-        # sim_map = torch.matmul(query, key)
-        # if self.matmul_norm:
-        #     sim_map = (self.channels**-.5) * sim_map
-        # sim_map = F.softmax(sim_map, dim=-1)
-        # context = torch.matmul(sim_map, value)
-
-        sim_map = torch.bmm(key, value) 
+        sim_map = torch.matmul(key, value) 
         # sim_map /= (height * width) # cosine similarity
-        
-        context = torch.bmm(query, sim_map)
+        context = torch.matmul(query, sim_map)
         context = context.permute(0, 2, 1).contiguous()
         context = context.reshape(batch_size, -1, *x.shape[2:])
-        if self.out_project is not None:
-            context = self.out_project(context)
-        # context += _value
-        # context += x
-        return context
 
+        context = self.out_project(context)
+        fuse_feature = context + x
+
+        if up_flag and smf_flag:
+            if up_feat_in is not None:
+                fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
+            up_feature = self.up(fuse_feature)
+            smooth_feature = self.smooth(fuse_feature)
+            return up_feature, smooth_feature
+        
+        if up_flag and not smf_flag:
+            if up_feat_in is not None:
+                fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
+            up_feature = self.up(fuse_feature)
+            return up_feature
+        
+        if not up_flag and smf_flag:
+            if up_feat_in is not None:
+                fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
+            smooth_feature = self.smooth(fuse_feature)
+            return smooth_feature
+    
 
 @HEADS.register_module()
-class FastAttentionHead(LINKHead):
+class FastAttentionHead(BaseDecodeHead):
     def __init__(self,
-                 upsample_cfg=dict(type='InterpConv'),
                  **kwargs):
         super(FastAttentionHead, self).__init__(**kwargs)
         self.fa = nn.ModuleList()
@@ -141,16 +149,27 @@ class FastAttentionHead(LINKHead):
                 FastAttentionBlock(
                     in_channels=2 ** i,
                     channels=32,  # channels can be changed if you want.
-                    # out_channels=2 ** i if i is 6 else 2 ** (i-1), 
-                    out_channels=2 ** i, 
-                    key_query_num_convs=1,
-                    value_out_num_convs=1,
-                    with_out=True,
+                    up_channels=2 ** i if i is 6 else 2 ** (i-1),
+                    # smf_channels=2 ** i if i is 6 else 2 ** (i-1), 
+                    smf_channels=128, 
                     conv_cfg=None,
                     norm_cfg=self.norm_cfg,
-                    act_cfg=self.act_cfg
+                    act_cfg=self.act_cfg,
+                    align_corners=self.align_corners
                 )
             )
+    
+    def upsample_cat(self, x, y):
+        '''Upsample and concatenate feature maps.
+        '''
+        _, _, H, W = y.size()
+        x = resize(
+            x,
+            size=(H, W),
+            mode='bilinear',
+            align_corners=self.align_corners
+        )
+        return torch.cat([x, y], dim=1)
             
     def forward(self, inputs):
         """Forward function."""
@@ -160,14 +179,12 @@ class FastAttentionHead(LINKHead):
         feat_8 = x[1]
         feat_4 = x[0]
 
-        mix_16 = self.decoder_block_4(self.fa[3](feat_32) + feat_32)
-        mix_8 = self.decoder_block_3(self.fa[2](feat_16) + mix_16)
-        mix_4 = self.decoder_block_2(self.fa[1](feat_8) + mix_8)
-        output = self.decoder_block_1(self.fa[0](feat_4) + mix_4)
-        # mix_16 = self.fa[2](feat_16) + self.decoder_block_4(feat_32)
-        # mix_8 = self.fa[1](feat_8) + self.decoder_block_3(mix_16)
-        # mix_4 = self.fa[0](feat_4) + self.decoder_block_2(mix_8)
-        # output =  self.decoder_block_1(mix_4)
+        up_feat_32, smf_feat_32 = self.fa[3](feat_32, None, True, True)
+        up_feat_16, smf_feat_16 = self.fa[2](feat_16, up_feat_32 , True, True)
+        up_feat_8 = self.fa[1](feat_8, up_feat_16, True, False)
+        smf_feat_4 = self.fa[0](feat_4, up_feat_8, False, True)
+
+        output = self.upsample_cat(smf_feat_16, smf_feat_4)
 
         output = self.cls_seg(output)
         return output
