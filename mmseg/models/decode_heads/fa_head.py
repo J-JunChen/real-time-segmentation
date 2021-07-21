@@ -29,9 +29,11 @@ class FastAttentionBlock(nn.Module):
         act_cfg (dict|None): Config of activation layers.
     """
     def __init__(self, in_channels, channels, up_channels,
-                 smf_channels, conv_cfg, 
-                 norm_cfg, act_cfg, align_corners):
+                 smf_channels, up_flag, smf_flag,
+                 conv_cfg, norm_cfg, act_cfg, align_corners):
         super(FastAttentionBlock, self).__init__()
+        self.up_flag = up_flag
+        self.smf_flag = smf_flag
         self.align_corners = align_corners
         self.key_project = ConvModule(
             in_channels,
@@ -61,24 +63,26 @@ class FastAttentionBlock(nn.Module):
             conv_cfg=conv_cfg,
             norm_cfg=norm_cfg,
             act_cfg=act_cfg)
-        self.up = ConvModule(
-            in_channels,
-            up_channels,
-            1,
-            stride=1,
-            padding=1,
-            conv_cfg=conv_cfg,
-            norm_cfg=norm_cfg,
-            act_cfg=act_cfg)
-        self.smooth = ConvModule(
-            in_channels,
-            smf_channels,
-            3,
-            stride=1,
-            padding=1,
-            conv_cfg=conv_cfg,
-            norm_cfg=norm_cfg,
-            act_cfg=act_cfg)
+        if self.up_flag:
+            self.up = ConvModule(
+                in_channels,
+                up_channels,
+                1,
+                stride=1,
+                padding=1,
+                conv_cfg=conv_cfg,
+                norm_cfg=norm_cfg,
+                act_cfg=act_cfg)
+        if self.smf_flag:
+            self.smooth = ConvModule(
+                in_channels,
+                smf_channels,
+                3,
+                stride=1,
+                padding=1,
+                conv_cfg=conv_cfg,
+                norm_cfg=norm_cfg,
+                act_cfg=act_cfg)
     
     def upsample_add(self, x, y):
         '''Upsample and add two feature maps.
@@ -88,11 +92,10 @@ class FastAttentionBlock(nn.Module):
             x,
             size=(H, W),
             mode='bilinear',
-            align_corners=self.align_corners
-        )
+            align_corners=self.align_corners)
         return x + y
 
-    def forward(self, x, up_feat_in, up_flag, smf_flag):
+    def forward(self, x, up_feat_in):
         """Forward function."""
         batch_size, channels, height, width = x.size()
 
@@ -118,25 +121,25 @@ class FastAttentionBlock(nn.Module):
         context = self.out_project(context)
         fuse_feature = context + x
 
-        if up_flag and smf_flag:
+        if self.up_flag and self.smf_flag:
             if up_feat_in is not None:
                 fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
             up_feature = self.up(fuse_feature)
             smooth_feature = self.smooth(fuse_feature)
             return up_feature, smooth_feature
         
-        if up_flag and not smf_flag:
+        if self.up_flag and not self.smf_flag:
             if up_feat_in is not None:
                 fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
             up_feature = self.up(fuse_feature)
             return up_feature
         
-        if not up_flag and smf_flag:
+        if not self.up_flag and self.smf_flag:
             if up_feat_in is not None:
                 fuse_feature = self.upsample_add(up_feat_in, fuse_feature)
             smooth_feature = self.smooth(fuse_feature)
             return smooth_feature
-    
+
 
 @HEADS.register_module()
 class FastAttentionHead(BaseDecodeHead):
@@ -152,6 +155,8 @@ class FastAttentionHead(BaseDecodeHead):
                     up_channels=2 ** i if i is 6 else 2 ** (i-1),
                     # smf_channels=2 ** i if i is 6 else 2 ** (i-1), 
                     smf_channels=128, 
+                    up_flag=False if i is 6 else True ,
+                    smf_flag=True if i%2 == 0 else False ,
                     conv_cfg=None,
                     norm_cfg=self.norm_cfg,
                     act_cfg=self.act_cfg,
@@ -179,10 +184,15 @@ class FastAttentionHead(BaseDecodeHead):
         feat_8 = x[1]
         feat_4 = x[0]
 
-        up_feat_32, smf_feat_32 = self.fa[3](feat_32, None, True, True)
-        up_feat_16, smf_feat_16 = self.fa[2](feat_16, up_feat_32 , True, True)
-        up_feat_8 = self.fa[1](feat_8, up_feat_16, True, False)
-        smf_feat_4 = self.fa[0](feat_4, up_feat_8, False, True)
+        # up_feat_32, smf_feat_32 = self.fa[3](feat_32, None, True, True)
+        # up_feat_32 = self.fa[3](feat_32, None, True, False)
+        # up_feat_16, smf_feat_16 = self.fa[2](feat_16, up_feat_32 , True, True)
+        # up_feat_8 = self.fa[1](feat_8, up_feat_16, True, False)
+        # smf_feat_4 = self.fa[0](feat_4, up_feat_8, False, True)
+        up_feat_32 = self.fa[3](feat_32, None)
+        up_feat_16, smf_feat_16 = self.fa[2](feat_16, up_feat_32)
+        up_feat_8 = self.fa[1](feat_8, up_feat_16)
+        smf_feat_4 = self.fa[0](feat_4, up_feat_8)
 
         output = self.upsample_cat(smf_feat_16, smf_feat_4)
 
